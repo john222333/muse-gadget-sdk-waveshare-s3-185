@@ -9,6 +9,7 @@ def fn(name):
  return source[a:e]
 harness=r'''
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
