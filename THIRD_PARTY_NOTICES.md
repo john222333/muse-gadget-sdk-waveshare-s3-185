@@ -11,3 +11,13 @@
 Added implementation and documentation are distributed under Apache-2.0. Modified upstream files retain original notices; this project is a community derivative, not an official release from Meta, Waveshare or Microsoft.
 
 No Microsoft voice assets, Jianying voices, personal SDK credentials or provisioned firmware binaries are distributed. Open-source code does not grant rights to external models, accounts or hosted voice services. The upstream development signing key was already public; it is a development fixture, not a private credential of the user.
+
+## Public 0.2.0 firmware bundle
+
+The release includes a generic, unprovisioned firmware build, not a user's flash/NVS dump. Added code uses Apache-2.0; dependency licenses remain applicable. The bundle includes license texts for ESP-IDF, managed components, minimp3 and fonts.
+
+GNU Unifont 16.0.04 CJK bitmaps are by Roman Czyborra, Paul Hardy and contributors, distributed here under SIL OFL 1.1 (see `third_party_licenses/Unifont-OFL-1.1.txt` and `esp32/components/muse/fonts/README.md`). Existing unscii, LVGL/Adafruit fonts retain their original notices.
+
+Upstream Jollybot artwork is explicitly excluded from the upstream Apache license (see `README.upstream.md`). The source fork retains those notices; the generic Waveshare firmware uses the original Apache-licensed community pixel avatar instead.
+
+The USB installer separately installs esptool 5.4.0 (GPL-2.0-or-later) and pyserial 3.5 (BSD-3-Clause). Their package license notices apply; no installer dependency is vendored in the ZIP.

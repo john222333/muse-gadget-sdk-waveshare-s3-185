@@ -2,7 +2,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "muse_reply_tts.h"
+#include "gadget_user_config.h"
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <strings.h>
 #include <stdatomic.h>
@@ -25,6 +27,8 @@ typedef struct {
     unsigned epoch;
     bool mpeg;
     char text[1024];
+    bool native;
+    char url[2048];
 } job_t;
 static QueueHandle_t results;
 static atomic_uint epoch;
@@ -40,14 +44,14 @@ static esp_err_t receive(esp_http_client_event_t *event) {
     job_t *job=event->user_data;
     if (event->event_id==HTTP_EVENT_ON_HEADER && event->header_key && event->header_value &&
         !strcasecmp(event->header_key,"Content-Type"))
-        job->mpeg=!strncasecmp(event->header_value,"audio/mpeg",10);
+        job->mpeg=!strncasecmp(event->header_value,"audio/mpeg",10) || !strncasecmp(event->header_value,"audio/mp3",9) || (job->native && (!strncasecmp(event->header_value,"application/octet-stream",24) || !strncasecmp(event->header_value,"audio/wav",9) || !strncasecmp(event->header_value,"audio/x-wav",11)));
     return ESP_OK;
 }
 static void run(void *arg) {
     job_t *job=arg;
     esp_http_client_config_t config={
-        .url=CONFIG_MUSE_REPLY_TTS_URL,.timeout_ms=15000,
-        .method=HTTP_METHOD_POST,.event_handler=receive,.user_data=job,
+        .url=job->native?job->url:gadget_user_tts_url(),.timeout_ms=15000,
+        .method=job->native?HTTP_METHOD_GET:HTTP_METHOD_POST,.event_handler=receive,.user_data=job,
         .crt_bundle_attach=esp_crt_bundle_attach,.disable_auto_redirect=true,
         .buffer_size=2048,.buffer_size_tx=1024,
     };
@@ -55,12 +59,16 @@ static void run(void *arg) {
     size_t total=0;
     bool ok=false;
     if (client && job->epoch==atomic_load(&epoch)) {
-        esp_http_client_set_header(client,"Content-Type","text/plain; charset=utf-8");
-        size_t len=strlen(job->text);
+        if(!job->native)esp_http_client_set_header(client,"Content-Type","text/plain; charset=utf-8");
+        if(!job->native && gadget_user_tts_key()[0]) {
+            char auth[208];snprintf(auth,sizeof(auth),"Bearer %s",gadget_user_tts_key());
+            esp_http_client_set_header(client,"Authorization",auth);
+        }
+        size_t len=job->native?0:strlen(job->text);
         if (esp_http_client_open(client,len)==ESP_OK &&
-            esp_http_client_write(client,job->text,len)==(int)len &&
+            (!len || esp_http_client_write(client,job->text,len)==(int)len) &&
             esp_http_client_fetch_headers(client)>=0) {
-            if (esp_http_client_get_status_code(client)==204) ok=true;
+            if (esp_http_client_get_status_code(client)==204 && !job->native) ok=true;
             else if (esp_http_client_get_status_code(client)==200 && job->mpeg) {
             while (job->epoch==atomic_load(&epoch)) {
                 muse_reply_tts_result_t part=job->result;
@@ -90,7 +98,7 @@ static void run(void *arg) {
     vTaskDeleteWithCaps(NULL);
 }
 bool muse_reply_tts_start(const char *text,uint32_t gen,int message,uint32_t ticket) {
-    if (!CONFIG_MUSE_REPLY_TTS_URL[0] || !text || !text[0] || strlen(text)>=1024) return false;
+    if (!gadget_user_tts_url()[0] || !text || !text[0] || strlen(text)>=1024) return false;
     if (!results) results=xQueueCreateWithCaps(16,sizeof(muse_reply_tts_result_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!results || atomic_load(&workers)>=2) return false;
     job_t *job=heap_caps_calloc(1,sizeof(*job),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -101,6 +109,17 @@ bool muse_reply_tts_start(const char *text,uint32_t gen,int message,uint32_t tic
     if (xTaskCreatePinnedToCoreWithCaps(run,"muse_tts",12*1024,job,4,NULL,0,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS) {
         atomic_fetch_sub(&workers,1);free(job);return false;
     }
+    return true;
+}
+bool muse_reply_audio_start(const char *url,uint32_t gen,int message,uint32_t ticket) {
+    if(!url || strlen(url)>=2048 || (strncmp(url,"http://",7) && strncmp(url,"https://",8)))return false;
+    if (!results) results=xQueueCreateWithCaps(16,sizeof(muse_reply_tts_result_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!results || atomic_load(&workers)>=2) return false;
+    job_t *job=heap_caps_calloc(1,sizeof(*job),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);if(!job)return false;
+    job->native=true;strcpy(job->url,url);job->epoch=atomic_load(&epoch);
+    job->result.gen=gen;job->result.message=message;job->result.ticket=ticket;
+    atomic_fetch_add(&workers,1);
+    if(xTaskCreatePinnedToCoreWithCaps(run,"muse_audio",12*1024,job,4,NULL,0,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)!=pdPASS){atomic_fetch_sub(&workers,1);free(job);return false;}
     return true;
 }
 bool muse_reply_tts_poll(muse_reply_tts_result_t *result) {

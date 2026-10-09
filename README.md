@@ -15,23 +15,22 @@
 
 模型回复仍来自 Muse 云端，在线女声也不是离线模型。电脑转发方案需要主机和现有代理持续运行，女声需要语音主机；独立路由器部署尚未完成。
 
-## 烧录能否直接使用
+## 直接烧录
 
-当前发布源码，没有可直接下载、自动配对的通用固件。你需要自己的 **Muse SDK token** 构建、完整烧录，并用 Muse 手机端配置 2.4 GHz Wi-Fi 和配对。联网与语音分别验收：女声需要持续运行的电脑服务；电脑转发还需要 HTTP 代理和入站端口配置。
+提供 **0.2.0 通用烧录包**：[下载 Releases](https://github.com/john222333/muse-gadget-sdk-waveshare-s3-185/releases)。用户不用安装 ESP-IDF 或编译；固件没有内置私人令牌，烧录后用 USB 填写自己的 Muse SDK token，再用手机配网/配对。
 
-先读[网络配置与逐步验收](docs/NETWORK_SETUP.zh-CN.md)，按直连、路由器或电脑方案选择。服务恢复后的完整对话尚待实机复测，不能只凭构建或 Wi-Fi 已连接判断互联成功。
+1. 下载 `muse-waveshare-s3-185-flash.zip`，解压并安装 Python 3.11+，运行 `install.cmd`。
+2. 按[直接烧录指南](docs/DIRECT_FLASH.zh-CN.md)烧录正确的无触摸 N16R8 板子，运行 `configure.cmd` 填写个人参数。
+3. Muse 手机端开启 Developer mode，添加设备，短按 BOOT 确认，再选择 2.4 GHz Wi-Fi。
+4. 按[网络配置与验收](docs/NETWORK_SETUP.zh-CN.md)选择直连、路由器或电脑转发；电脑服务与防火墙不会自动配置。
+5. 如需文字朗读，可使用[自己的语音 API](docs/SPEECH_API.zh-CN.md)，或[可选电脑微软女声服务](tools/muse_host/README.zh-CN.md)。接口地址与 Bearer key 可在烧录后更改。
 
-## 快速开始
-
-1. 克隆本仓库：`git clone https://github.com/john222333/muse-gadget-sdk-waveshare-s3-185.git`，进入克隆目录。准备 ESP-IDF **v6.0.1**、16 MB Flash / 8 MB PSRAM 的目标板，以及你自己的 Muse SDK token。
-2. 按[硬件、编译与配网指南](docs/WAVESHARE_S3_185.zh-CN.md)构建、烧录及配对。
-3. 如需女声，按[电脑服务指南](tools/muse_host/README.zh-CN.md)安装依赖，填写本地配置，并明确同意在线语音传输。
-4. 需要代理时再开启可选 TLS 转发；无需代理可关闭。
-
-公开配置默认只监听回环地址，在线语音未授权、TLS 转发未开启。请自行设置开发板和电脑地址。
+手机新助手回复可同步到待机板子：MP3/PCM16 WAV 直接播放；带文字时可由自选接口朗读。支持范围和实测界限见直接烧录指南，不保证所有手机端事件格式。源代码构建方法保留在[硬件指南](docs/WAVESHARE_S3_185.zh-CN.md)。
 
 ## 文档
 
+- [直接烧录与 USB 配置](docs/DIRECT_FLASH.zh-CN.md)
+- [可替换语音 API](docs/SPEECH_API.zh-CN.md)
 - [网络配置、端口、防火墙和逐步验收](docs/NETWORK_SETUP.zh-CN.md)
 - [硬件、编译、配网和操作](docs/WAVESHARE_S3_185.zh-CN.md)
 - [前期工作总结与修复过程](docs/WORK_SUMMARY.zh-CN.md)

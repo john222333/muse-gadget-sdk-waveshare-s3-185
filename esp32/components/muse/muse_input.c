@@ -15,6 +15,8 @@
  */
 
 #include "muse_input.h"
+#include "gadget_user_config.h"
+#include "esp_system.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -570,6 +572,18 @@ static void set_face(const char *name)
  */
 static bool console_command(char *line, bool whole)
 {
+    if (!strncmp(line,"user.config=",12)) {
+        esp_err_t err=whole ? gadget_user_config_save(line+12) : ESP_ERR_INVALID_SIZE;
+        printf("@user.config %s\n",err==ESP_OK ? "saved; reboot required" : "invalid or storage error");
+        fflush(stdout);return true;
+    }
+#if CONFIG_MUSE_HATCH
+    if (!strncmp(line,"phone.test=",11)) {muse_hatch_phone_test(line+11);return true;}
+#endif
+    if (!strcmp(line,"user.reboot")) {
+        printf("@user.reboot restarting\n");fflush(stdout);vTaskDelay(pdMS_TO_TICKS(200));esp_restart();return true;
+    }
+
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);

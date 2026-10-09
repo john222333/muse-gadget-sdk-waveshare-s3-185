@@ -43,6 +43,7 @@
 #include "lwip/ip4_addr.h"
 
 #include "identity.h"
+#include "gadget_user_config.h"
 #include "config_store.h"
 #include "wifi_mgr.h"
 #include "wifi_known.h"
@@ -2487,6 +2488,7 @@ void app_run(void) {
     }
 
     config_store_init();
+    ESP_ERROR_CHECK(gadget_user_config_init());
     wifi_known_init();
 
     identity_init();
@@ -2509,7 +2511,7 @@ void app_run(void) {
     ESP_LOGI(TAG, "  Region:   %s", have_region ? region : "(none)");
     ESP_LOGI(TAG, "  Verify:   %s", link_pairing_sign_factory_test());
     // Only the hint gadgets.muse.ai displays; the full token is never logged.
-    ESP_LOGI(TAG, "  SDK token:  %.12s", identity_sdk_token() ? identity_sdk_token() : "(none)");
+    ESP_LOGI(TAG, "  SDK token:  %s", identity_sdk_token() ? "configured" : "missing; configure over USB");
     ESP_LOGI(TAG, "========================");
 
     link_pairing_init(identity_node_id(), identity_device_id(), identity_mac(),

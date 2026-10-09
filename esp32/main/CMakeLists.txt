@@ -41,6 +41,7 @@ set(GADGET_SRCS
 )
 
 set(GADGET_REQUIRES
+    gadget_user_config
     nvs_flash
     esp_wifi
     esp_event
@@ -113,6 +114,4 @@ idf_component_register(
     REQUIRES ${GADGET_REQUIRES}
 )
 
-if(CONFIG_MUSE_PC_RELAY_IP)
-    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=lwip_getaddrinfo,--undefined=__wrap_lwip_getaddrinfo")
-endif()
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=lwip_getaddrinfo,--undefined=__wrap_lwip_getaddrinfo")

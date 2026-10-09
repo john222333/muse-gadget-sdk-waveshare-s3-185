@@ -82,6 +82,12 @@ bool muse_hatch_ready(void);
 void muse_hatch_turn_begin(void);
 /* Speak a fixed test phrase through the normal reply TTS/playback path. */
 void muse_hatch_speech_selftest(void);
+/* Voice task claims a newly received phone reply for normal playback. */
+bool muse_hatch_phone_reply_pending(void);
+/* Protect queued audio until the speaker consumer has drained it. */
+void muse_hatch_playback_busy(bool busy);
+/* Local bench fixture routed through the same phone-event handling. */
+void muse_hatch_phone_test(const char *url);
 /* 16 kHz mono speech, in order, from press to release. */
 void muse_hatch_turn_audio(const int16_t *pcm, size_t frames);
 /* Release: no more audio; the reply follows. */

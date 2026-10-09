@@ -18,7 +18,7 @@ harness=r'''
 #define TEXT_CHARS_PER_S 16
 #define ESP_LOGI(...) ((void)0)
 enum tts_t {TTS_NONE,TTS_QUEUED,TTS_ACTIVE,TTS_FINISHED};
-struct msg_t {size_t len=0,spoken=0,phrase_end=0;bool done=false;tts_t tts=TTS_NONE;unsigned pcm_start=0,pcm_frames=0,phrase_start=0;};
+struct msg_t {size_t len=0,spoken=0,phrase_end=0;char *audio_url=nullptr;bool done=false;tts_t tts=TTS_NONE;unsigned pcm_start=0,pcm_frames=0,phrase_start=0;};
 struct prefetch_t {unsigned char *audio;size_t len=0,from=0,end=0;int message=0;unsigned ticket=0;bool started=false,ended=false,ok=false;};
 struct {prefetch_t ahead;unsigned ticket=0,ticket_seq=0;unsigned char *mp3;msg_t msgs[2];int tts_msg=-1,nmsgs=1;char *texts;bool text=false,silent=false,mp3_ended=false,speech_failed=false;unsigned pcm_out=0,gen=1;size_t mp3_len=0;int kbps=0,down_rate=0,dec=0;} s_turn;
 static std::vector<std::string> phrases;
@@ -27,6 +27,7 @@ static bool muse_reply_tts_start(const char *text,unsigned,int,unsigned){phrases
 enum {M_TTS};static void mark(int){}
 static void mp3dec_init(int *){}
 static void show_reply_start(const msg_t &){}
+static bool start_native_audio(msg_t &,int){return false;}
 '''+fn('finish_phrase')+'\n'+fn('start_tts')+'\n'+fn('prefetch_tts')+r'''
 int main(){
  char texts[TEXT_MAX*2]={0};unsigned char audio[524288],ahead[524288];s_turn.mp3=audio;s_turn.ahead.audio=ahead;s_turn.texts=texts;

@@ -15,6 +15,7 @@
  */
 
 #include "identity.h"
+#include "gadget_user_config.h"
 
 #include <stdio.h>
 #include <ctype.h>
@@ -59,5 +60,5 @@ const char *identity_ble_name(void) { return s_ble_name; }
 const char *identity_mac(void) { return s_mac; }
 const char *identity_device_id(void) { return s_device_id; }
 const char *identity_sdk_token(void) {
-    return CONFIG_GADGET_SDK_TOKEN[0] ? CONFIG_GADGET_SDK_TOKEN : NULL;
+    return gadget_user_sdk_token();
 }

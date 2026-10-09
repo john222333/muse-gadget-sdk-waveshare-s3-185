@@ -59,6 +59,8 @@ if(CONFIG_MUSE_ENABLED)
     if(custom_avatar)
         message(STATUS "Custom avatar: components/muse/avatar/muse_pixel.c")
         list(APPEND srcs "avatar/muse_pixel.c")
+    elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_185)
+        list(APPEND srcs "boards/muse_pixel_community.c")
     else()
         list(APPEND srcs "../../avatar/muse_pixel.c")
     endif()
@@ -113,6 +115,7 @@ elseif(CONFIG_HOMEHUB_VOICE)
 endif()
 
 set(muse_priv_requires
+    gadget_user_config
     esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
     bt esp-tls mbedtls esp_app_format esp_http_client
     noise_core minimp3

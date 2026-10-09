@@ -345,7 +345,7 @@ static void go_idle(const char *caption);
  * Plays Hatch's reply as it arrives, with its text as the caption. Returns
  * true if interrupted by a new press. *delivered: the VM has the note.
  */
-static bool hatch_reply(bool *delivered)
+static bool hatch_reply_impl(bool *delivered)
 {
     muse_state_set_mode(MUSE_MODE_THINKING);
     muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
@@ -428,6 +428,17 @@ static bool hatch_reply(bool *delivered)
         vTaskDelay(pdMS_TO_TICKS(2500));
     }
     return false;
+}
+
+static bool hatch_reply(bool *delivered) {
+#if CONFIG_MUSE_HATCH
+    muse_hatch_playback_busy(true);
+#endif
+    bool interrupted=hatch_reply_impl(delivered);
+#if CONFIG_MUSE_HATCH
+    muse_hatch_playback_busy(false);
+#endif
+    return interrupted;
 }
 
 static void go_idle(const char *caption)
@@ -830,6 +841,14 @@ static void voice_task(void *arg)
                 pre_reset();
             }
 #if CONFIG_MUSE_HATCH
+            if (muse_hatch_phone_reply_pending()) {
+                muse_state_poke();
+                bool delivered=false;
+                pending_down=hatch_reply(&delivered);
+                pre_reset();
+                if (!pending_down) go_idle("");
+                continue;
+            }
             if (s_speechtest) {
                 s_speechtest=false;
                 muse_hatch_speech_selftest();

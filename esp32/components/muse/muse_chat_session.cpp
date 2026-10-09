@@ -70,6 +70,9 @@ extern "C" {
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_reply_tts.h"
+#include "muse_audio_reply.h"
+#include "muse_wave.h"
+#include "gadget_user_config.h"
 #include "muse_reply_phrase.h"
 #include "muse_wifi.h"
 }
@@ -131,7 +134,7 @@ static const char *TAG = "muse_chat_session";
 
 /* ---- Voice task <-> session task ---- */
 
-enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_SPEECH_TEST, CMD_WAKE };
+enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_SPEECH_TEST, CMD_PHONE_TEST, CMD_WAKE };
 
 struct cmd_t {
     cmd_type_t type;
@@ -198,6 +201,8 @@ enum tts_t : uint8_t { TTS_NONE, TTS_QUEUED, TTS_ACTIVE, TTS_FINISHED };
 
 struct msg_t {
     char id[80];
+    char *audio_url;
+    bool native_played;
     size_t len;              /* reply text length so far */
     char tail[128];          /* its last characters, for the caption */
     bool done;
@@ -253,6 +258,9 @@ struct turn_t {
     bool mp3_ended;
     prefetch_t ahead;
     uint32_t ticket, ticket_seq;
+    bool wave_checked;
+    muse_wave_t wave;
+    size_t wave_played;
     bool speech_failed;      /* Avoid repeating a failed service request this turn. */
     mp3dec_t dec;
     resampler_t down;
@@ -276,6 +284,17 @@ static void log_marks(void);
 static int16_t *s_pcm;       /* MINIMP3_MAX_SAMPLES_PER_FRAME */
 static int16_t *s_pcm16;     /* resampled output */
 static int64_t s_last_seq;
+static std::atomic<bool> s_phone_pending{false};
+static std::atomic<bool> s_playback_busy{false};
+static char *s_phone_queue[4];
+static char s_phone_queue_ids[4][80];
+static unsigned s_phone_queue_count;
+static char s_phone_seen[16][80];
+static unsigned s_phone_seen_next;
+static bool phone_seen(const char *id) {
+    for(const auto &saved:s_phone_seen) if(!strcmp(saved,id)) return true;
+    return false;
+}
 
 static int64_t now_us(void)
 {
@@ -719,7 +738,7 @@ static int64_t open_stream(kind_t kind, const char *verb, const char *path, cons
     slot->msg = -1;
     slot->len = 0;
     slot->overflow = false;
-    ESP_LOGI(TAG, "stream %lld: %s %s", (long long)id, verb, path);
+    ESP_LOGI(TAG, "stream %lld: %s %s", (long long)id, verb, kind==K_TTS?"(audio path redacted)":path);
     return id;
 }
 
@@ -969,6 +988,8 @@ static void turn_finish(void)
 {
     muse_reply_tts_cancel();
     turn_reset_streams();
+    s_phone_pending.store(false);
+    for(auto &m:s_turn.msgs){free(m.audio_url);m.audio_url=nullptr;}
     s_turn.phase = P_IDLE;
     s_turn.dict_id = s_turn.chat_id = 0;
     s_turn.tts_msg = -1;
@@ -1336,6 +1357,7 @@ static int bind_msg(const char *id, cJSON *payload)
     }
     msg_t &m = s_turn.msgs[s_turn.nmsgs];
     m = msg_t{};
+    if(s_turn.texts)s_turn.texts[s_turn.nmsgs*TEXT_MAX]=0;
     strlcpy(m.id, id, sizeof(m.id));
     return s_turn.nmsgs++;
 }
@@ -1426,6 +1448,19 @@ static const char *msg_id(cJSON *payload, cJSON *event)
     return id && id[0] ? id : nullptr;
 }
 
+static bool enqueue_phone(cJSON *line,const char *id) {
+    if(!id || strlen(id)>=80 || phone_seen(id))return false;
+    for(unsigned i=0;i<s_phone_queue_count;i++)if(!strcmp(s_phone_queue_ids[i],id))return true;
+    if(s_phone_queue_count==4){ESP_LOGW(TAG,"Phone reply queue full");return false;}
+    cJSON *copy=cJSON_Duplicate(line,true);if(!copy)return false;
+    cJSON_DeleteItemFromObjectCaseSensitive(copy,"seq");
+    char *data=cJSON_PrintUnformatted(copy);cJSON_Delete(copy);
+    if(!data)return false;
+    if(strlen(data)>65535){cJSON_free(data);return false;}
+    s_phone_queue[s_phone_queue_count]=data;
+    strlcpy(s_phone_queue_ids[s_phone_queue_count++],id,80);return true;
+}
+
 static void on_event(cJSON *line)
 {
     if (strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(line, "type")) ?: "", "event") != 0) {
@@ -1439,11 +1474,27 @@ static void on_event(cJSON *line)
         }
         s_last_seq = v > s_last_seq ? v : s_last_seq;
     }
-    if (s_turn.phase != P_WAIT_REPLY) {
-        return;
-    }
     const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
     cJSON *payload = cJSON_GetObjectItem(line, "payload");
+    bool phone=false;
+    if(gadget_user_phone_audio() && !strcmp(event,"message.assistant") && s_turn.phase==P_IDLE && (s_playback_busy.load() || s_phone_pending.load())) {
+        enqueue_phone(line,msg_id(payload,line));return;
+    }
+    if(s_turn.phase==P_IDLE && gadget_user_phone_audio() && !strcmp(event,"message.assistant")) {
+        const char *id=msg_id(payload,line);
+        const char *text=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"display_text"));
+        if(!text || !text[0])text=cJSON_GetStringValue(cJSON_GetObjectItem(payload,"content"));
+        const char *audio=muse_audio_reference(payload,false,0);
+        if(!id || strlen(id)>=sizeof(s_phone_seen[0]) || phone_seen(id) || ((!text || !text[0]) && !muse_audio_url_valid(audio)))return;
+        uint32_t gen=++s_gen;
+        xQueueReset(s_events);xStreamBufferReset(s_out);
+        if(!turn_start(gen,false))return;
+        s_turn.phase=P_WAIT_REPLY;
+        s_turn.chat_us=s_turn.last_event_us=s_turn.last_content_us=now_us();
+        strlcpy(s_phone_seen[s_phone_seen_next++%16],id,sizeof(s_phone_seen[0]));
+        phone=true;
+    }
+    if (s_turn.phase != P_WAIT_REPLY) return;
 
     if (!strcmp(event, "agent.status") || !strcmp(event, "task.status")) {
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_code"));
@@ -1474,6 +1525,12 @@ static void on_event(cJSON *line)
     }
     s_turn.last_event_us = s_turn.last_content_us = now_us();
     msg_t &m = s_turn.msgs[i];
+    const char *audio=muse_audio_reference(payload,false,0);
+    if(!m.audio_url && muse_audio_url_valid(audio) && !m.spoken && m.tts!=TTS_ACTIVE) {
+        size_t length=strlen(audio)+1;
+        m.audio_url=static_cast<char *>(psram_alloc(length));
+        if(m.audio_url)memcpy(m.audio_url,audio,length);
+    }
     if (append) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "text"));
         if (text && text[0] && s_turn.text) {
@@ -1493,7 +1550,14 @@ static void on_event(cJSON *line)
         cJSON *ready = cJSON_GetObjectItem(payload, "display_text_ready");
         if (done || !cJSON_IsFalse(ready)) {
             message_done(i, text);
+            if(!phone_seen(m.id))strlcpy(s_phone_seen[s_phone_seen_next++%16],m.id,80);
+            if(m.audio_url && !m.native_played)m.tts=TTS_QUEUED;
         }
+    }
+    if(phone) {
+        show_reply_start(m);
+        s_phone_pending.store(true);
+        ESP_LOGI(TAG,"New phone reply queued for playback");
     }
 }
 
@@ -1529,12 +1593,41 @@ static void finish_phrase(void)
     s_turn.silent=false;
 }
 
+static void native_audio_failed(msg_t &m) {
+    free(m.audio_url);m.audio_url=nullptr;
+    m.spoken=m.phrase_end=0;m.native_played=false;
+    m.tts=m.len?TTS_QUEUED:TTS_FINISHED;
+    s_turn.tts_msg=-1;s_turn.silent=false;s_turn.mp3_len=0;
+    if(!m.len)emit(MUSE_HATCH_EV_ERROR,"AUDIO NEEDS MP3/PCM WAV");
+    else ESP_LOGW(TAG,"Native audio unavailable; using reply text and configured speech API");
+}
+
+static bool start_native_audio(msg_t &m,int i) {
+    if(!m.audio_url || m.native_played || !m.done)return false;
+    m.native_played=true;m.tts=TTS_ACTIVE;m.pcm_start=m.phrase_start=s_turn.pcm_out;
+    m.spoken=0;m.phrase_end=m.len;s_turn.tts_msg=i;
+    s_turn.mp3_len=0;s_turn.mp3_ended=false;s_turn.silent=false;
+    s_turn.wave_checked=false;s_turn.wave={};s_turn.wave_played=0;
+    s_turn.ticket=++s_turn.ticket_seq;mp3dec_init(&s_turn.dec);
+    bool started=false;
+    if(muse_settings_speaker_on()) {
+        if(m.audio_url[0]=='/') {
+            int64_t id=open_stream(K_TTS,"GET",m.audio_url,nullptr,"audio/mpeg",nullptr,true);
+            stream_t *stream=find_stream(id);if(stream){stream->msg=i;started=true;}
+        } else started=muse_reply_audio_start(m.audio_url,s_turn.gen,i,s_turn.ticket);
+    }
+    if(!started)native_audio_failed(m);
+    emit(MUSE_HATCH_EV_REPLY,"PHONE AUDIO");
+    return true;
+}
+
 static void start_tts(void)
 {
     if (s_turn.tts_msg>=0 || s_turn.text) return;
     for (int i=0;i<s_turn.nmsgs;i++) {
         msg_t &m=s_turn.msgs[i];
         if (m.tts==TTS_FINISHED) continue;
+        if(start_native_audio(m,i))return;
         if (!s_turn.texts) {
             if (!m.done) return;
             m.phrase_end=m.len;
@@ -1600,6 +1693,8 @@ static void tts_end(stream_t *s, bool ok)
     }
     if (ok) {
         s_turn.mp3_ended = true;   /* decode() drains the rest, then finishes */
+    } else if(s_turn.msgs[i].audio_url) {
+        native_audio_failed(s_turn.msgs[i]);
     } else {
         s_turn.msgs[i].tts = TTS_FINISHED;
         s_turn.tts_msg = -1;
@@ -1626,6 +1721,7 @@ static void pace_silently(void)
 static void prefetch_tts(void) {
     if (s_turn.tts_msg<0 || s_turn.silent || s_turn.speech_failed || s_turn.ahead.started || !s_turn.ahead.audio || !s_turn.texts) return;
     int i=s_turn.tts_msg;
+    if(s_turn.msgs[i].audio_url)return;
     size_t from=s_turn.msgs[i].phrase_end;
     const char *text=s_turn.texts+i*TEXT_MAX;
     from+=muse_reply_skip(text+from);
@@ -1653,6 +1749,10 @@ static void poll_reply_tts(void) {
                     tts_data(result.audio,result.size);
                 }
                 if (result.final) {
+                    if(!result.ok && s_turn.msgs[result.message].audio_url) {
+                        native_audio_failed(s_turn.msgs[result.message]);
+                        free(result.audio);continue;
+                    }
                     s_turn.mp3_ended=true;
                     if (result.unavailable) s_turn.speech_failed=true;
                     if (!result.ok && !s_turn.kbps && !s_turn.mp3_len) {
@@ -1673,11 +1773,42 @@ static void poll_reply_tts(void) {
     }
 }
 
+static void decode_wave(void) {
+    if(!s_turn.wave_checked) {
+        s_turn.wave_checked=true;
+        if(!muse_wave_parse(s_turn.mp3,s_turn.mp3_len,&s_turn.wave)) {
+            native_audio_failed(s_turn.msgs[s_turn.tts_msg]);return;
+        }
+        resampler_init(&s_turn.down,s_turn.wave.rate,MIC_RATE);
+    }
+    while(s_turn.wave_played<s_turn.wave.bytes && xStreamBufferSpacesAvailable(s_out)>=2050*sizeof(int16_t)) {
+        size_t frames=(s_turn.wave.bytes-s_turn.wave_played)/(s_turn.wave.channels*2);
+        if(frames>512)frames=512;
+        const uint8_t *data=s_turn.mp3+s_turn.wave.offset+s_turn.wave_played;
+        for(size_t i=0;i<frames;i++) {
+            int left=(int16_t)muse_le16(data+i*s_turn.wave.channels*2);
+            int right=s_turn.wave.channels==2?(int16_t)muse_le16(data+i*4+2):left;
+            s_pcm[i]=(left+right)/2;
+        }
+        size_t n=resample(&s_turn.down,s_pcm,frames,s_pcm16);
+        if(s_turn.gen==s_gen.load()){mark(M_AUDIO);xStreamBufferSend(s_out,s_pcm16,n*sizeof(int16_t),0);}
+        s_turn.pcm_out+=n;s_turn.wave_played+=frames*s_turn.wave.channels*2;
+    }
+    if(s_turn.wave_played==s_turn.wave.bytes) {
+        s_turn.msgs[s_turn.tts_msg].pcm_frames=s_turn.pcm_out-s_turn.msgs[s_turn.tts_msg].pcm_start;
+        finish_phrase();
+    }
+}
+
 /* Decodes buffered MP3 while the reply buffer has room. */
 static void decode(void)
 {
     if (s_turn.tts_msg < 0) {
         return;
+    }
+    if(s_turn.msgs[s_turn.tts_msg].audio_url) {
+        if(!s_turn.mp3_ended)return;
+        if(s_turn.mp3_len>=12 && !memcmp(s_turn.mp3,"RIFF",4)){decode_wave();return;}
     }
     if (s_turn.silent) {
         pace_silently();
@@ -1734,7 +1865,8 @@ static void decode(void)
     }
     if (s_turn.mp3_ended && !s_turn.mp3_len) {
         m.pcm_frames = s_turn.pcm_out - m.pcm_start;
-        finish_phrase();
+        if(m.audio_url && !m.pcm_frames && muse_settings_speaker_on())native_audio_failed(m);
+        else finish_phrase();
     }
 }
 
@@ -2036,6 +2168,16 @@ static void handle(const cmd_t &cmd)
             emit(MUSE_HATCH_EV_REPLY,"Speech test");
         }
         break;
+    case CMD_PHONE_TEST:
+        if(s_turn.phase==P_IDLE) {
+            cJSON *event=cJSON_CreateObject(),*payload=cJSON_CreateObject();
+            char id[48];snprintf(id,sizeof(id),"phone-test-%08lx",(unsigned long)esp_random());
+            cJSON_AddStringToObject(event,"type","event");cJSON_AddStringToObject(event,"event","message.assistant");
+            cJSON_AddStringToObject(payload,"message_id",id);cJSON_AddStringToObject(payload,"display_text","手机语音测试，播放完成。");
+            if(cmd.text && cmd.text[0])cJSON_AddStringToObject(payload,"audio_url",cmd.text);
+            cJSON_AddItemToObject(event,"payload",payload);on_event(event);cJSON_Delete(event);
+        }
+        free(cmd.text);break;
     case CMD_WAKE:   /* only ends hatch_task's resting wait */
         break;
     }
@@ -2091,6 +2233,14 @@ static void hatch_task(void *arg)
             drop_connection("send failed");
             continue;
         }
+        if(s_turn.phase==P_IDLE && !s_playback_busy.load() && !s_phone_pending.load() && s_phone_queue_count) {
+            char *data=s_phone_queue[0];
+            for(unsigned i=1;i<s_phone_queue_count;i++){
+                s_phone_queue[i-1]=s_phone_queue[i];memcpy(s_phone_queue_ids[i-1],s_phone_queue_ids[i],80);
+            }
+            s_phone_queue_count--;
+            cJSON *event=cJSON_Parse(data);cJSON_free(data);if(event){on_event(event);cJSON_Delete(event);}
+        }
         poll_reply_tts();
         if (s_turn.phase == P_WAIT_REPLY) {
             start_tts();
@@ -2105,7 +2255,7 @@ static void hatch_task(void *arg)
         int64_t t = now_us();
         if (t - s_conn.last_rx_us > DEAD_US) {
             drop_connection("server went quiet");
-        } else if (s_turn.phase == P_IDLE && t - s_conn.last_use_us > IDLE_CLOSE_US) {
+        } else if (s_turn.phase == P_IDLE && !gadget_user_phone_audio() && t - s_conn.last_use_us > IDLE_CLOSE_US) {
             disconnect("idle");
             muse_hatch_report(MUSE_HATCH_UNTESTED, "");
             s_auto_next_us = INT64_MAX;   /* the next turn connects */
@@ -2254,6 +2404,19 @@ extern "C" void muse_hatch_text_turn(char *text)
 extern "C" void muse_hatch_text_cancel(void)
 {
     post(CMD_TEXT_CANCEL, 0);
+}
+
+extern "C" void muse_hatch_phone_test(const char *url) {
+    cmd_t cmd{};cmd.type=CMD_PHONE_TEST;cmd.text=strdup(url?url:"");
+    if(!cmd.text || xQueueSend(s_cmds,&cmd,pdMS_TO_TICKS(1000))!=pdTRUE)free(cmd.text);
+}
+
+extern "C" void muse_hatch_playback_busy(bool busy) {
+    s_playback_busy.store(busy);
+}
+
+extern "C" bool muse_hatch_phone_reply_pending(void) {
+    return s_phone_pending.exchange(false);
 }
 
 extern "C" muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap)

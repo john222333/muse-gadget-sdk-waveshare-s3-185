@@ -4,6 +4,7 @@
 #include <netdb.h>
 #include <string.h>
 #include "sdkconfig.h"
+#include "gadget_user_config.h"
 #include "esp_log.h"
 int __real_lwip_getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);
 static int is_muse_service(const char *name) {
@@ -18,9 +19,9 @@ static int is_muse_service(const char *name) {
 }
 int __wrap_lwip_getaddrinfo(const char *name, const char *service,
                        const struct addrinfo *hints, struct addrinfo **result) {
-    if (CONFIG_MUSE_PC_RELAY_IP[0] && is_muse_service(name)) {
-        ESP_LOGI("muse_relay", "Routing %s through computer %s", name, CONFIG_MUSE_PC_RELAY_IP);
-        return __real_lwip_getaddrinfo(CONFIG_MUSE_PC_RELAY_IP, service, hints, result);
+    if (gadget_user_relay_ip()[0] && is_muse_service(name)) {
+        ESP_LOGI("muse_relay", "Routing %s through computer %s", name, gadget_user_relay_ip());
+        return __real_lwip_getaddrinfo(gadget_user_relay_ip(), service, hints, result);
     }
     return __real_lwip_getaddrinfo(name, service, hints, result);
 }
