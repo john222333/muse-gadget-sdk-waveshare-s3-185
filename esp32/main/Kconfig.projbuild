@@ -352,3 +352,10 @@ menu "ESP32 Device SDK"
             locks read protection. No shared software attestation key is used.
 
 endmenu
+
+config MUSE_PC_RELAY_IP
+    string "Temporary Muse computer relay IPv4 address"
+    default ""
+    help
+        Empty uses normal DNS. Nonempty redirects Muse service TLS sockets
+        to the local computer relay, preserving TLS server authentication.

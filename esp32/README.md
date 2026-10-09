@@ -297,3 +297,9 @@ their upstream licenses:
 
 ESP-IDF components fetched at build time (into `managed_components/`) are
 under their own licenses.
+
+## Waveshare ESP32-S3-LCD-1.85 (no touch)
+
+ESP32-S3 N16R8, ST77916 QSPI 360x360, I2S microphone and PCM5101 output.
+Build with the s3-185 profile. See [the community port guide](../docs/WAVESHARE_S3_185.zh-CN.md)
+for pins, local configuration, companion services and verification. OTA is disabled for this board.

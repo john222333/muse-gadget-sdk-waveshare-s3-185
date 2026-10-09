@@ -24,3 +24,19 @@ muse-simulator.ppm
 # Local gadget provisioning and original-device flash backups.
 .sdk-token
 /backups/
+
+# Private provisioning, host configuration and test recordings
+**/sdkconfig.local
+**/config.local.json
+.env
+.env.*
+*.log
+*.bin
+*.elf
+*.map
+*.wav
+*.mp3
+*.pem.local
+**/credentials*.json
+**/.venv/
+!esp32/components/muse/test_reply.mp3

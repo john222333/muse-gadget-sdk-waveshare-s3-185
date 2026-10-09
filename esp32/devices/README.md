@@ -520,3 +520,8 @@ sleep, and BOOT wakes it.
 Coming from other firmware, erase the flash once before the first flash
 (`idf.py -p PORT erase-flash`): Muse's NVS and `prod_data` partitions sit where
 other firmware keeps its own data.
+
+## Waveshare ESP32-S3-LCD-1.85 (no touch)
+
+N16R8, ST77916 360x360 QSPI LCD, I2S microphone and PCM5101 speaker.
+Use the s3-185 profile. See [the port guide](../../docs/WAVESHARE_S3_185.zh-CN.md).

@@ -80,6 +80,8 @@ bool muse_hatch_ready(void);
 
 /* Press: connects if needed and starts streaming speech to the VM. */
 void muse_hatch_turn_begin(void);
+/* Speak a fixed test phrase through the normal reply TTS/playback path. */
+void muse_hatch_speech_selftest(void);
 /* 16 kHz mono speech, in order, from press to release. */
 void muse_hatch_turn_audio(const int16_t *pcm, size_t frames);
 /* Release: no more audio; the reply follows. */

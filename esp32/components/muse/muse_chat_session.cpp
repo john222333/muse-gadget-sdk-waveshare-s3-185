@@ -69,6 +69,8 @@ extern "C" {
 #include "muse_account_api.h"
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_reply_tts.h"
+#include "muse_reply_phrase.h"
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
@@ -98,7 +100,7 @@ static const char *TAG = "muse_chat_session";
 #define IN_BYTES (MIC_RATE * 2 * 8)        /* 8 s of mic backlog while connecting */
 #define OUT_BYTES (MIC_RATE * 2 * 2)       /* 2 s of decoded reply */
 #define EV_TEXT 72
-#define TEXT_MAX 1024                      /* a message's text, for captions timed to its speech */
+#define TEXT_MAX 32768                      /* a message's text, for captions timed to its speech */
 #define SPEECH_CHARS_PER_S 14              /* until the speech's length is known */
 #define TEXT_CHARS_PER_S 16                /* speaker off: reading pace, a little over speech */
 #define TEXT_HOLD_S 2                      /* speaker off: how long a message's last lines stay up */
@@ -110,7 +112,7 @@ static const char *TAG = "muse_chat_session";
 #define AUTO_RETRY_MAX_US (120 * 1000000LL)
 #define FINAL_TIMEOUT_US (15 * 1000000LL)  /* release -> final transcript */
 #define REPLY_TIMEOUT_US (60 * 1000000LL)  /* chat posted -> first assistant message */
-#define TURN_CAP_US (180 * 1000000LL)
+#define TURN_CAP_US (600 * 1000000LL)
 #define SETTLE_US (3 * 1000000LL)          /* quiet period that ends a turn */
 #define BUSY_HOLD_US (20 * 1000000LL)      /* how long a busy agent keeps it open */
 #define TEXT_REPLY_TIMEOUT_US (5 * 60 * 1000000LL)   /* typed turns: agents can work a while */
@@ -129,7 +131,7 @@ static const char *TAG = "muse_chat_session";
 
 /* ---- Voice task <-> session task ---- */
 
-enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE };
+enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_SPEECH_TEST, CMD_WAKE };
 
 struct cmd_t {
     cmd_type_t type;
@@ -200,6 +202,8 @@ struct msg_t {
     char tail[128];          /* its last characters, for the caption */
     bool done;
     tts_t tts;
+    size_t spoken, phrase_end;
+    uint32_t phrase_start;
     uint32_t pcm_start;      /* where its speech starts in the reply audio */
     uint32_t pcm_frames;     /* how long it is; 0 until the MP3 has all arrived */
 };
@@ -210,6 +214,13 @@ struct resampler_t {
     int16_t prev;
 };
 
+struct prefetch_t {
+    uint8_t *audio;
+    size_t len, from, end;
+    int message;
+    uint32_t ticket;
+    bool started, ended, ok;
+};
 struct turn_t {
     phase_t phase;
     uint32_t gen;
@@ -240,6 +251,9 @@ struct turn_t {
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
     bool mp3_ended;
+    prefetch_t ahead;
+    uint32_t ticket, ticket_seq;
+    bool speech_failed;      /* Avoid repeating a failed service request this turn. */
     mp3dec_t dec;
     resampler_t down;
     int kbps;
@@ -953,6 +967,7 @@ static void turn_reset_streams(void)
 
 static void turn_finish(void)
 {
+    muse_reply_tts_cancel();
     turn_reset_streams();
     s_turn.phase = P_IDLE;
     s_turn.dict_id = s_turn.chat_id = 0;
@@ -992,12 +1007,13 @@ static bool turn_start(uint32_t gen, bool text)
             turn_finish();
         }
     }
-    uint8_t *chunk = s_turn.chunk, *mp3 = s_turn.mp3, *note = s_turn.note;
+    uint8_t *chunk = s_turn.chunk, *mp3 = s_turn.mp3, *note = s_turn.note, *ahead = s_turn.ahead.audio;
     char *texts = s_turn.texts;
     s_turn = turn_t{};
     s_turn.chunk = chunk;
     s_turn.mp3 = mp3;
     s_turn.note = note;
+    s_turn.ahead.audio = ahead;
     s_turn.texts = texts;
     s_turn.gen = gen;
     s_turn.text = text;
@@ -1371,7 +1387,7 @@ static void show_reply_start(const msg_t &m)
 static void message_done(int i, const char *final_text)
 {
     msg_t &m = s_turn.msgs[i];
-    if (m.done) {
+    if (m.done && s_turn.text) {
         return;
     }
     m.done = true;
@@ -1387,10 +1403,12 @@ static void message_done(int i, const char *final_text)
         ESP_LOGI(TAG, "message %s done (%u chars)", m.id, (unsigned)n);
         return;
     }
-    if (!m.len && final_text && final_text[0]) {
-        append_text(m, final_text);
+    if (final_text && final_text[0] && s_turn.texts) {
+        const char *full=s_turn.texts+i*TEXT_MAX;
+        size_t have=strlen(full), final_len=strlen(final_text);
+        if (final_len>have && !strncmp(full,final_text,have)) append_text(m,final_text+have);
     }
-    if (m.len && m.tts == TTS_NONE) {
+    if (m.len && (m.tts == TTS_NONE || (m.tts==TTS_FINISHED && s_turn.texts && m.spoken<strlen(s_turn.texts+i*TEXT_MAX)))) {
         m.tts = TTS_QUEUED;
     }
     ESP_LOGI(TAG, "message %s done (%u chars)", m.id, (unsigned)m.len);
@@ -1501,37 +1519,62 @@ static void on_chat_ack(stream_t *s)
 
 /* ---- Turn: speech ---- */
 
+static void finish_phrase(void)
+{
+    msg_t &m=s_turn.msgs[s_turn.tts_msg];
+    m.spoken=m.phrase_end;
+    m.pcm_frames=s_turn.pcm_out-m.pcm_start;
+    m.tts=m.done && (!s_turn.texts || !s_turn.texts[s_turn.tts_msg*TEXT_MAX+m.spoken]) ? TTS_FINISHED : (m.done ? TTS_QUEUED : TTS_NONE);
+    s_turn.tts_msg=-1;
+    s_turn.silent=false;
+}
+
 static void start_tts(void)
 {
-    if (s_turn.tts_msg >= 0) {
-        return;
-    }
-    for (int i = 0; i < s_turn.nmsgs; i++) {
-        msg_t &m = s_turn.msgs[i];
-        if (m.tts != TTS_QUEUED) {
-            continue;
+    if (s_turn.tts_msg>=0 || s_turn.text) return;
+    for (int i=0;i<s_turn.nmsgs;i++) {
+        msg_t &m=s_turn.msgs[i];
+        if (m.tts==TTS_FINISHED) continue;
+        if (!s_turn.texts) {
+            if (!m.done) return;
+            m.phrase_end=m.len;
+        } else {
+            const char *text=s_turn.texts+i*TEXT_MAX;
+            m.spoken+=muse_reply_skip(text+m.spoken);
+            size_t length=muse_reply_phrase_limit(text+m.spoken,m.done,m.phrase_end?60:20,m.phrase_end?12:6);
+            if (length && !muse_reply_has_words(text+m.spoken,length)) {m.spoken+=length;i--;continue;}
+            if (!length) {
+                if (m.done) {m.tts=TTS_FINISHED;continue;}
+                return; // Keep subsequent messages in conversation order.
+            }
+            m.phrase_end=m.spoken+length;
         }
-        /*
-         * Replies are text, shown at reading pace: silence in place of speech
-         * paces the captions and ends the turn. To speak them instead, send
-         * the message's text (s_turn.texts + i * TEXT_MAX, if texts was
-         * allocated; up to TEXT_MAX - 1 bytes) to a TTS API of your choice and
-         * play the MP3 it returns. In place of the silence below: keep
-         * m.tts = TTS_ACTIVE and s_turn.tts_msg = i, set s_turn.silent = false,
-         * m.pcm_start = s_turn.pcm_out, m.pcm_frames = 0, s_turn.mp3_len = 0,
-         * s_turn.mp3_ended = false, s_turn.kbps = 0, s_turn.down_rate = 0 and
-         * mp3dec_init(&s_turn.dec). Then, on this task, pass the MP3 to
-         * tts_data() as it arrives (it buffers up to MP3_BUF and drops the
-         * rest, so hold off while it's full) and set s_turn.mp3_ended at the
-         * end. decode() plays it at the speaker's volume, captions following,
-         * and finishes the message once it's drained.
-         */
-        m.pcm_start = s_turn.pcm_out;
-        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
-        m.tts = TTS_ACTIVE;
-        s_turn.tts_msg = i;
-        s_turn.silent = true;
-        ESP_LOGI(TAG, "showing message %s (%u chars)", m.id, (unsigned)m.len);
+        if (!m.spoken) m.pcm_start=s_turn.pcm_out;
+        m.phrase_start=s_turn.pcm_out;
+        m.pcm_frames=0;
+        m.tts=TTS_ACTIVE;s_turn.tts_msg=i;
+        s_turn.mp3_len=0;s_turn.mp3_ended=false;s_turn.kbps=0;s_turn.down_rate=0;
+        s_turn.silent=true;
+        if (s_turn.ahead.started && s_turn.ahead.message==i && s_turn.ahead.from==m.spoken) {
+            m.phrase_end=s_turn.ahead.end;
+            s_turn.ticket=s_turn.ahead.ticket;
+            memcpy(s_turn.mp3,s_turn.ahead.audio,s_turn.ahead.len);
+            s_turn.mp3_len=s_turn.ahead.len;s_turn.mp3_ended=s_turn.ahead.ended;
+            s_turn.silent=s_turn.ahead.ended && !s_turn.ahead.ok;
+            s_turn.ahead.started=false;mp3dec_init(&s_turn.dec);
+            ESP_LOGI(TAG,"Using prefetched speech: %u bytes",(unsigned)s_turn.mp3_len);
+        } else if (muse_settings_speaker_on() && s_turn.texts && !s_turn.speech_failed) {
+            char phrase[256];
+            size_t length=m.phrase_end-m.spoken;
+            memcpy(phrase,s_turn.texts+i*TEXT_MAX+m.spoken,length);phrase[length]=0;
+            if (muse_reply_tts_start(phrase,s_turn.gen,i,s_turn.ticket=++s_turn.ticket_seq)) {
+                s_turn.silent=false;
+                mp3dec_init(&s_turn.dec);
+                mark(M_TTS);
+                ESP_LOGI(TAG,"Synthesizing reply phrase: %u bytes",(unsigned)length);
+            }
+        }
+        if (s_turn.silent) m.pcm_frames=(uint32_t)((m.phrase_end-m.spoken)*MIC_RATE/TEXT_CHARS_PER_S);
         show_reply_start(m);
         return;
     }
@@ -1568,16 +1611,65 @@ static void pace_silently(void)
 {
     static const int16_t zeros[256] = {};
     msg_t &m = s_turn.msgs[s_turn.tts_msg];
-    uint32_t end = m.pcm_start + m.pcm_frames + TEXT_HOLD_S * MIC_RATE;
+    uint32_t end = m.phrase_start + m.pcm_frames + (m.done ? TEXT_HOLD_S * MIC_RATE : 0);
     while (s_turn.pcm_out < end && xStreamBufferSpacesAvailable(s_out) >= sizeof(zeros)) {
         uint32_t n = end - s_turn.pcm_out < 256 ? end - s_turn.pcm_out : 256;
         xStreamBufferSend(s_out, zeros, n * sizeof(int16_t), 0);
         s_turn.pcm_out += n;
     }
     if (s_turn.pcm_out >= end) {
-        m.tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
-        s_turn.silent = false;
+        finish_phrase();
+    }
+}
+
+/* Worker owns its audio; this task alone mutates the active turn. */
+static void prefetch_tts(void) {
+    if (s_turn.tts_msg<0 || s_turn.silent || s_turn.speech_failed || s_turn.ahead.started || !s_turn.ahead.audio || !s_turn.texts) return;
+    int i=s_turn.tts_msg;
+    size_t from=s_turn.msgs[i].phrase_end;
+    const char *text=s_turn.texts+i*TEXT_MAX;
+    from+=muse_reply_skip(text+from);
+    if (!text[from] && s_turn.msgs[i].done && i+1<s_turn.nmsgs) {
+        i++;text=s_turn.texts+i*TEXT_MAX;from=s_turn.msgs[i].spoken;from+=muse_reply_skip(text+from);
+    }
+    size_t n=muse_reply_phrase(text+from,s_turn.msgs[i].done);
+    if (!n || !muse_reply_has_words(text+from,n)) return;
+    char phrase[256];memcpy(phrase,text+from,n);phrase[n]=0;
+    uint32_t ticket=++s_turn.ticket_seq;
+    if (!muse_reply_tts_start(phrase,s_turn.gen,i,ticket)) return;
+    s_turn.ahead.message=i;s_turn.ahead.from=from;s_turn.ahead.end=from+n;
+    s_turn.ahead.ticket=ticket;s_turn.ahead.len=0;
+    s_turn.ahead.ended=false;s_turn.ahead.ok=false;s_turn.ahead.started=true;
+    ESP_LOGI(TAG,"Prefetching reply phrase: %u bytes",(unsigned)n);
+}
+
+static void poll_reply_tts(void) {
+    muse_reply_tts_result_t result;
+    while (muse_reply_tts_poll(&result)) {
+        if (s_turn.phase==P_WAIT_REPLY && result.gen==s_turn.gen && result.gen==s_gen.load()) {
+            if (result.ticket==s_turn.ticket && result.message==s_turn.tts_msg) {
+                if (result.size) {
+                    if (!s_turn.mp3_len && !s_turn.kbps) ESP_LOGI(TAG,"Reply speech first chunk: %u bytes",(unsigned)result.size);
+                    tts_data(result.audio,result.size);
+                }
+                if (result.final) {
+                    s_turn.mp3_ended=true;
+                    if (result.unavailable) s_turn.speech_failed=true;
+                    if (!result.ok && !s_turn.kbps && !s_turn.mp3_len) {
+                        msg_t &m=s_turn.msgs[result.message];
+                        m.pcm_frames=(uint32_t)((m.phrase_end-m.spoken)*MIC_RATE/TEXT_CHARS_PER_S);
+                        s_turn.silent=true;
+                    }
+                }
+            } else if (s_turn.ahead.started && result.ticket==s_turn.ahead.ticket) {
+                if (result.size && s_turn.ahead.len+result.size<=MP3_BUF) {
+                    memcpy(s_turn.ahead.audio+s_turn.ahead.len,result.audio,result.size);
+                    s_turn.ahead.len+=result.size;
+                }
+                if (result.final) {s_turn.ahead.ended=true;s_turn.ahead.ok=result.ok;}
+            }
+        }
+        free(result.audio);
     }
 }
 
@@ -1642,8 +1734,7 @@ static void decode(void)
     }
     if (s_turn.mp3_ended && !s_turn.mp3_len) {
         m.pcm_frames = s_turn.pcm_out - m.pcm_start;
-        m.tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
+        finish_phrase();
     }
 }
 
@@ -1933,6 +2024,18 @@ static void handle(const cmd_t &cmd)
             turn_fail("CANCELLED");
         }
         break;
+    case CMD_SPEECH_TEST:
+        if (cmd.gen==s_gen.load() && turn_start(cmd.gen,false)) {
+            s_turn.phase=P_WAIT_REPLY;
+            s_turn.chat_us=s_turn.last_event_us=s_turn.last_content_us=now_us();
+            s_turn.nmsgs=1;
+            msg_t &m=s_turn.msgs[0];
+            strlcpy(m.id,"speech-selftest",sizeof(m.id));
+            append_text(m,"你好呀，我现在可以用甜美的女声和你聊天啦。\n\n**现在我会一边生成，一边播放。**\n你说完话以后，我会尽快回答你。\n消息编号：assistant-msg-541c09b3-7382-44cc-be05-4e7ba3c47712");
+            m.done=true; m.tts=TTS_QUEUED;
+            emit(MUSE_HATCH_EV_REPLY,"Speech test");
+        }
+        break;
     case CMD_WAKE:   /* only ends hatch_task's resting wait */
         break;
     }
@@ -1988,9 +2091,11 @@ static void hatch_task(void *arg)
             drop_connection("send failed");
             continue;
         }
+        poll_reply_tts();
         if (s_turn.phase == P_WAIT_REPLY) {
             start_tts();
             decode();
+            prefetch_tts();
         }
         if (!s_connected) {
             continue;
@@ -2054,6 +2159,7 @@ extern "C" void muse_hatch_start(void)
     s_turn.chunk = static_cast<uint8_t *>(psram_alloc(DICT_CHUNK_BYTES + sizeof(MUSE_HATCH_NOTE_TAIL)));
     s_turn.mp3 = static_cast<uint8_t *>(psram_alloc(MP3_BUF));
     s_turn.note = VOICE_NOTE ? static_cast<uint8_t *>(psram_alloc(NOTE_PART_BYTES)) : nullptr;
+    s_turn.ahead.audio=static_cast<uint8_t *>(psram_alloc(MP3_BUF));
     s_turn.texts = static_cast<char *>(psram_alloc(MAX_MSGS * TEXT_MAX));   /* captions just stay untimed without it */
     s_pcm = static_cast<int16_t *>(psram_alloc(MINIMP3_MAX_SAMPLES_PER_FRAME * sizeof(int16_t)));
     s_pcm16 = static_cast<int16_t *>(psram_alloc((MINIMP3_MAX_SAMPLES_PER_FRAME + 8) * sizeof(int16_t)));
@@ -2083,6 +2189,12 @@ extern "C" void muse_hatch_chat_forget(void)
 extern "C" bool muse_hatch_ready(void)
 {
     return s_cmds && muse_hatch_configured() && muse_wifi_connected();
+}
+
+extern "C" void muse_hatch_speech_selftest(void) {
+    uint32_t gen=++s_gen;
+    xStreamBufferReset(s_in); drain_out();
+    post(CMD_SPEECH_TEST,gen);
 }
 
 extern "C" void muse_hatch_turn_begin(void)
@@ -2179,7 +2291,14 @@ extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
     }
     size_t len = strlen(text);
     uint32_t frames = m->pcm_frames ? m->pcm_frames : (uint32_t)(len * MIC_RATE / SPEECH_CHARS_PER_S);
-    size_t at = frames ? (size_t)((uint64_t)(played - m->pcm_start) * len / frames) : 0;
+    size_t at;
+    if (m->tts==TTS_ACTIVE && m->phrase_end>m->spoken) {
+        uint32_t phrase_frames=s_turn.pcm_out>m->phrase_start ? s_turn.pcm_out-m->phrase_start : 0;
+        if (!s_turn.mp3_ended) phrase_frames=(uint32_t)((m->phrase_end-m->spoken)*MIC_RATE/SPEECH_CHARS_PER_S);
+        at=played<m->phrase_start ? (m->spoken?m->spoken-1:0) :
+            m->spoken+(phrase_frames?(uint64_t)(played-m->phrase_start)*(m->phrase_end-m->spoken)/phrase_frames:0);
+        if (at>=m->phrase_end) at=m->phrase_end-1;
+    } else at = frames ? (size_t)((uint64_t)(played - m->pcm_start) * len / frames) : 0;
     if (at >= len) {
         at = len ? len - 1 : 0;
     }

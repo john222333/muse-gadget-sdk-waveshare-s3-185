@@ -1,0 +1,5 @@
+# Copy to ignored sdkconfig.local. Insert your own SDK token locally.
+CONFIG_GADGET_SDK_TOKEN=""
+# Optional: replace documentation address with your computer LAN address.
+# CONFIG_MUSE_REPLY_TTS_URL="http://192.0.2.10:8765/tts"
+# CONFIG_MUSE_PC_RELAY_IP="192.0.2.10"

@@ -1,0 +1,16 @@
+{
+  "bind": "127.0.0.1",
+  "allowed_peers": [
+    "127.0.0.1"
+  ],
+  "tts_port": 8765,
+  "relay_port": 443,
+  "relay_enabled": false,
+  "proxy": "",
+  "online_speech_consent": false,
+  "speech": {
+    "voice": "zh-CN-XiaoyiNeural",
+    "rate": "-5%",
+    "pitch": "+2Hz"
+  }
+}

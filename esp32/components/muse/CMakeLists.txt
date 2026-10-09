@@ -43,7 +43,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_link.c"
         "muse_ble.c")
     if(CONFIG_MUSE_HATCH)
-        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
+        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_reply_tts.c")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
     else()
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
@@ -92,6 +92,8 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "boards/board_m5stack_cores3.c")
     elseif(CONFIG_MUSE_BOARD_M5STACK_CORE2)
         list(APPEND srcs "boards/board_m5stack_core2.c")
+    elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_185)
+        list(APPEND srcs "boards/board_waveshare_s3_185.c" "boards/esp_lcd_st77916.c")
     elseif(CONFIG_MUSE_BOARD_FNK0104B)
         list(APPEND srcs "boards/board_fnk0104b.c")
     elseif(CONFIG_MUSE_BOARD_GUITION_JC3248W535)
@@ -106,7 +108,7 @@ if(CONFIG_MUSE_ENABLED)
 elseif(CONFIG_HOMEHUB_VOICE)
     # The Voice PE board uses just the Hatch voice session; the project's main/
     # voice_muse_chat.c stands in for the Muse settings, Wi-Fi and Link hooks.
-    list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_chat_text.c" "muse_text.c")
+    list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_reply_tts.c" "muse_chat_text.c" "muse_text.c")
     list(APPEND embed "test_reply.mp3")
 endif()
 

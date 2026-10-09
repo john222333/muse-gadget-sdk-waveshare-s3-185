@@ -1,0 +1,4 @@
+Muse Gadget SDK Waveshare ESP32-S3-LCD-1.85 community port
+Derived from Muse Gadget SDK, Copyright Meta Platforms, Inc. and affiliates.
+Includes ST77916 driver code, Copyright Espressif Systems (Shanghai) CO LTD.
+Original notices remain in their respective files. See THIRD_PARTY_NOTICES.md.

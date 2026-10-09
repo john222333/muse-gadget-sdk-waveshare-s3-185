@@ -69,7 +69,7 @@ static inline void muse_chat_reject(muse_chat_rejected_t *rejected, const char *
 
 /* A voice note is a POST /chat/stream body: NOTE_HEAD, a base64 WAV, NOTE_TAIL. */
 #define MUSE_HATCH_NOTE_HEAD \
-    "{\"message\":\"\",\"output_modality\":\"text\",\"items\":[{\"type\":\"file\"," \
+    "{\"message\":\"请根据录音回答。语音对话优先快速自然：先给一句简短结论，再补充必要内容。普通问题尽量三句话内回答；要求详细时完整展开。不要使用Markdown标题、列表或星号标记；不要输出消息ID、UUID、追踪编号等内部字段。\",\"output_modality\":\"text\",\"items\":[{\"type\":\"file\"," \
     "\"mime_type\":\"audio/wav\",\"filename\":\"voice_note.wav\",\"data_base64\":\""
 #define MUSE_HATCH_NOTE_TAIL "\"}]}"
 #define MUSE_HATCH_WAV_HEADER 44

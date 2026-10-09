@@ -553,3 +553,9 @@ Two tests skip quietly when their inputs are missing; check the summary for
 2. The host tests pass.
 3. If you flashed, the boot log reaches `starting`, and the log shows no
    panic or reboot loop.
+
+## Waveshare ESP32-S3-LCD-1.85 (no touch)
+
+ESP32-S3 N16R8, ST77916 QSPI 360x360, I2S microphone and PCM5101 output.
+Build with the s3-185 profile. See [the community port guide](../docs/WAVESHARE_S3_185.zh-CN.md)
+for pins, local configuration, companion services and verification. OTA is disabled for this board.

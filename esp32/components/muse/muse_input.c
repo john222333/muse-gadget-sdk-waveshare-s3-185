@@ -655,7 +655,9 @@ static void serial_task(void *arg)
         if (!muse_console_getc(&c)) {
             continue;
         }
-        if (c == 'm') {
+        if (c == 't') {
+            muse_voice_request_speechtest();
+        } else if (c == 'm') {
             muse_voice_request_mp3test();
         } else if (c == 'a' || c == 's') {
             muse_state_poke();
