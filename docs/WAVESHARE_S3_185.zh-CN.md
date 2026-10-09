@@ -17,6 +17,10 @@ Waveshare **ESP32-S3-LCD-1.85，无触摸版**。已验证 ESP32-S3 N16R8：16 M
 
 硬件事实参考 [Waveshare 官方资料](https://www.waveshare.com/wiki/ESP32-S3-LCD-1.85)及厂家公开 Demo 的 LCD、EXIO、I2C、MIC、Audio、PWR 示例。未初始化触摸控制器。
 
+## 新用户先读
+
+[网络配置与验收](NETWORK_SETUP.zh-CN.md)说明源码发布的前提，以及直连、路由器代理、电脑转发三种方案。当前没有下载后直接可配对的通用二进制。
+
 ## 编译
 
 激活 ESP-IDF **v6.0.1**。进入 `esp32`，复制 `sdkconfig.local.example` 为 `sdkconfig.local`，只在本机填入自己的 `CONFIG_GADGET_SDK_TOKEN`。本地文件已被忽略，不提交。
@@ -24,19 +28,28 @@ Waveshare **ESP32-S3-LCD-1.85，无触摸版**。已验证 ESP32-S3 N16R8：16 M
 需要女声时填写 `CONFIG_MUSE_REPLY_TTS_URL="http://你的电脑地址:8765/tts"`；需要 TLS 代理转发时填写 `CONFIG_MUSE_PC_RELAY_IP="你的电脑地址"`。两项默认空，保留正常 DNS/无外部朗读。
 
 ```sh
-idf.py -B build-s3-185 -DIDF_TARGET=esp32s3   -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-185;sdkconfig.local" build
+idf.py -B build-s3-185 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-s3-185/sdkconfig -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-185;sdkconfig.local" build
 idf.py -B build-s3-185 -p YOUR_SERIAL_PORT flash
 ```
 
-命令以一行形式列出，适用于 POSIX shell 和 PowerShell。普通硬件构建也可用 `tools/muse/board.sh build s3-185`，但启用主机服务时必须加载本地覆盖配置。
+命令以一行形式列出，适用于 POSIX shell 和 PowerShell。本页手动命令会明确加载 `sdkconfig.local`。`tools/muse/board.sh` 当前不会自动加载该文件，新用户请使用本页命令，避免遗漏令牌或服务地址。
 
-首次从其他固件迁移时，按上游说明先清空 Flash 再完整烧录，这会删除旧程序与配置。已配对后升级一般只烧录应用，不重复 erase-flash，以保留 NVS。
+首次从其他固件迁移时，用以下命令先清空 Flash，再完整烧录；**会删除旧程序、Wi-Fi 与配对信息**。将 YOUR_SERIAL_PORT 换成实际端口（Windows 如 COM3，Linux 如 /dev/ttyACM0）。已经用本项目配对的升级无需清空：正常 `flash` 保留 NVS。不要只把应用 bin 烧到地址 0。
+
+```sh
+idf.py -B build-s3-185 -p YOUR_SERIAL_PORT erase-flash
+idf.py -B build-s3-185 -p YOUR_SERIAL_PORT flash monitor
+```
+
+烧录连接不上时按住 BOOT、短按 RESET、松开 BOOT，再尝试。monitor 用 Ctrl+] 退出。不要直接写死别人板子的端口。
+
+已有生成 sdkconfig 会优先于默认配置。更改 `sdkconfig.local` 后用新目录构建（同时更改 `-B` 和 `-DSDKCONFIG` 的路径），或运行 `idf.py -B build-s3-185 -DSDKCONFIG=build-s3-185/sdkconfig menuconfig` 修改对应选项，再 build/flash。
 
 本移植关闭 OTA；开发签名方式沿用上游。不要把上游公开开发签名密钥当成生产私钥。
 
 ## 配对和按键
 
-- 使用 Muse 手机端，通过蓝牙添加设备，再选择 2.4 GHz Wi-Fi 和输入密码。
+- Muse 手机端开启 `Settings > Devices > Developer mode`，在 Devices 的 + 添加 `MuseGadget-…`；屏幕提示确认配对时短按 BOOT，再按手机流程选择 2.4 GHz Wi-Fi 和输入密码。
 - BOOT 按住说话、松开发送；回复播放时再次按住可以打断并开始下一轮。
 - PWR 是辅助菜单键，BOOT 配合选择；RESET 是重启，不是触摸或音量键。
 - 没有触摸屏，Wi-Fi 不是在三个按键上输入。

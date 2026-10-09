@@ -1,6 +1,6 @@
 # 电脑语音服务与可选 TLS 转发
 
-Python 3.11+。建议独立虚拟环境。
+Python 3.11+。建议独立虚拟环境。先按[网络配置与验收](../../docs/NETWORK_SETUP.zh-CN.md)选择方案，核对固件与主机两份配置。
 
 ```sh
 cd tools/muse_host
@@ -57,3 +57,5 @@ cc -I esp32/components/muse esp32/tests/reply_phrase_cases.c -o phrase-test
 ```
 
 最后运行生成的 phrase-test（Windows 为 .exe）。固件管线测试使用 `CXX` 指定 C++17 编译器；默认 `c++`。HTTP 测试使用模拟语音，不发送文本到线上服务。
+
+服务不会自动开机启动。电脑重启、休眠、终端关闭或代理停止后要重新启动并确认 relay/voice 各自就绪；`/health` 不是微软在线语音或 Muse 模型的验收。

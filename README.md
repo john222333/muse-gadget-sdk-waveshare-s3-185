@@ -13,11 +13,17 @@
 - 修复空行造成后续不朗读、单句截断、尾句遗漏、末尾读出 UUID/内部编号等问题。
 - 完整中文说明、公开配置模板、测试与验证记录。
 
-模型回复仍来自 Muse 云端，在线女声也不是离线模型。电脑方案需要主机和现有代理持续运行；独立路由器部署尚未完成。
+模型回复仍来自 Muse 云端，在线女声也不是离线模型。电脑转发方案需要主机和现有代理持续运行，女声需要语音主机；独立路由器部署尚未完成。
+
+## 烧录能否直接使用
+
+当前发布源码，没有可直接下载、自动配对的通用固件。你需要自己的 **Muse SDK token** 构建、完整烧录，并用 Muse 手机端配置 2.4 GHz Wi-Fi 和配对。联网与语音分别验收：女声需要持续运行的电脑服务；电脑转发还需要 HTTP 代理和入站端口配置。
+
+先读[网络配置与逐步验收](docs/NETWORK_SETUP.zh-CN.md)，按直连、路由器或电脑方案选择。服务恢复后的完整对话尚待实机复测，不能只凭构建或 Wi-Fi 已连接判断互联成功。
 
 ## 快速开始
 
-1. 准备 ESP-IDF **v6.0.1**、16 MB Flash / 8 MB PSRAM 的目标板，以及你自己的 Muse SDK token。
+1. 克隆本仓库：`git clone https://github.com/john222333/muse-gadget-sdk-waveshare-s3-185.git`，进入克隆目录。准备 ESP-IDF **v6.0.1**、16 MB Flash / 8 MB PSRAM 的目标板，以及你自己的 Muse SDK token。
 2. 按[硬件、编译与配网指南](docs/WAVESHARE_S3_185.zh-CN.md)构建、烧录及配对。
 3. 如需女声，按[电脑服务指南](tools/muse_host/README.zh-CN.md)安装依赖，填写本地配置，并明确同意在线语音传输。
 4. 需要代理时再开启可选 TLS 转发；无需代理可关闭。
@@ -26,6 +32,7 @@
 
 ## 文档
 
+- [网络配置、端口、防火墙和逐步验收](docs/NETWORK_SETUP.zh-CN.md)
 - [硬件、编译、配网和操作](docs/WAVESHARE_S3_185.zh-CN.md)
 - [前期工作总结与修复过程](docs/WORK_SUMMARY.zh-CN.md)
 - [验证结果、耗时和限制](docs/VALIDATION.zh-CN.md)
